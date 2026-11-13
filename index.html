@@ -1162,7 +1162,7 @@ var INK = (() => {
   const PEN = ['#1c1d21', '#e53935', '#1e66f5', '#1b9e4b', '#f08c00', '#8e44ad'], HL = ['#ffd60a', '#4cd964', '#ff7ab8', '#5ac8fa', '#ff9f0a'], BG = ['', '#ffffff', '#fff3a6', '#d4f2d4', '#ffdbe8', '#d6eaff'];
   const PW = [1.6, 2.6, 4.2], HW = [12, 18, 26], EW = [7, 13, 22], FS = [15, 19, 25], OLDCOL = ['#e53935', '#1e66f5'], OLDHL = ['#ffd60a', '#4cd964', '#ff7ab8'];
   const TAP_PX = 6, TAP_MS = 300, MAX_SCALE = 1.5, SMOOTH = .65, HOLD_MS = 450, SNAP = 4, PAD = 240, HINT = '펜슬로 필기';
-  const ZOOM_OWN = true, ZMAX = 4, PALM_MS = 600, GAP = .75;   // ZOOM_OWN = 확대를 엔진이 맡는다(끄면 브라우저 확대 그대로) · GAP = 점 사이 최소 간격(화면 pt)
+  const ZOOM_OWN = true, ZMAX = 4, PALM_MS = 900, PALM_R = 44, GAP = .75;   // ZOOM_OWN = 확대를 엔진이 맡는다(끄면 브라우저 확대 그대로) · GAP = 점 사이 최소 간격(화면 pt)
   const SKIPSEL = 'input,textarea,select,audio,video,button,a,[contenteditable],#inkBar,.ink-x';
   const HOT = 'a[href],button,input,select,textarea,label,summary,option,audio,video,[onclick],[contenteditable],[role=button],[role=link],[role=tab],[role=checkbox],[role=radio],[role=switch],[role=menuitem],[role=option]';
   const OURS = '.ink-l,.ink-x,.ink-pad,#inkBar,#inkTop,#inkLive';
@@ -1215,9 +1215,9 @@ body.ink-top{border-top:var(--ink-h,0px) solid transparent}
   /* ── 상태 ── */
   let host = null, act = null, eat = false, zeat = false, blockClick = 0, synth = false, undo = [], redo = [], sel = null, ta = null, last = null, barWant = false, stText = '', penSeen = false;
   const all = new Set(), boxes = new WeakMap(), byEl = new WeakMap();
-  const S = {tool: 'pen', pen: 1, hl: 0, tc: 0, fs: 19, bg: 0, whole: false, scr: true, size: {pen: 1, hl: 1, erase: 1}}, dg = {d: 0, u: 0, c: 0, t: 0, s: 0, p: 0, n: 0, f: 0};
+  const S = {tool: 'pen', pen: 1, hl: 0, tc: 0, fs: 19, bg: 0, whole: false, scr: true, size: {pen: 1, hl: 1, erase: 1}}, dg = {d: 0, u: 0, c: 0, t: 0, s: 0, p: 0, n: 0, f: 0, r: 0, b: 0, v: 0, w: 0};
   let dbg = false, dbgTap = [], fold = false, live = null, lctx = null, LR = null, raf = 0, topTimer = 0, prevTool = 'pen', toastT = 0;
-  let Z = 1, pin = null, palmUntil = 0, lastTap = null;   // Z = 엔진 확대 배율 · pin = 두 손가락 확대 중 · palmUntil = 이때까지 닿는 손은 손바닥으로 본다
+  let Z = 1, pin = null, palmUntil = 0, lastTap = null, lastPen = null;   // Z = 엔진 확대 배율 · pin = 두 손가락 확대 중 · palmUntil = 이때까지 닿는 손은 손바닥으로 본다
   const ZU = new Set(), ZM = new WeakMap(), fingers = new Map();   // ZU = 확대 묶음 · ZM = 묶음마다 원래 아래 여백 · fingers = 닿아 있는 손가락
   try { penSeen = localStorage.getItem('bnPen') === '1'; dbg = localStorage.getItem('ntDebug') === '1'; Object.assign(S, JSON.parse(localStorage.getItem('inkTool') || '{}')); fold = localStorage.getItem('inkFold') === '1'; } catch (e) {}
   if (S.tool !== 'hl') S.tool = 'pen';   // 색·굵기는 기억하되, 화면을 새로 열면 쓰는 도구(펜·형광펜)로 시작한다(지우개로 시작하면 당황스럽다)
@@ -1551,9 +1551,20 @@ body.ink-top{border-top:var(--ink-h,0px) solid transparent}
     if (mo) { did = mo.takeRecords().some(m => { const n = m.target.nodeType === 1 ? m.target : m.target.parentElement; return !(n && n.closest && n.closest(OURS + ',#inkToast')); }); mo.disconnect(); }
     return did;
   }
+  function penTap(a, tap, cx, cy) {   // 펜으로 같은 자리를 두 번 톡 = 쓰던 도구 ↔ 지우개(굿노트의 펜슬 두 번 톡 대신 — 사파리는 펜슬 몸통 손짓을 웹에 주지 않는다). 첫 톡이 남긴 점·지운 것은 되돌린다
+    const n = performance.now(), L = lastPen; lastPen = null;
+    if (!tap || ta || isHot(document.elementFromPoint(cx, cy))) return false;
+    if (L && n - L.t < 420 && Math.hypot(cx - L.x, cy - L.y) * a.z < 9) {
+      if (a.kind === 'draw') clearLive(); else { a.cur.remove(); if (a.hit) { a.c.q.s = a.before; draw(a.c); } }
+      const u = undo[undo.length - 1]; if (u && u !== L.top) { undo.pop(); u.c.q.s = u.before.slice(); draw(u.c); host.save(u.c); }
+      dg.w++; pencil('tap'); return true;
+    }
+    lastPen = {t: n, x: cx, y: cy, top: undo[undo.length - 1]}; return false;
+  }
   function endStroke(cx, cy, cutOff) {   // cutOff = 정상적인 up이 아니라 취소·놓침으로 끝남
     const a = act; if (!a) return; clearInterval(a.hold); act = null; palmUntil = performance.now() + PALM_MS;
     const far = a.dist * a.z, tap = !cutOff && far < TAP_PX && Date.now() - a.t < TAP_MS, c = a.c; blockClick = Date.now() + 400;
+    if ((a.kind === 'draw' || a.kind === 'erase') && penTap(a, tap, cx, cy)) return;
     if (a.kind === 'laser') { const p = a.path; setTimeout(() => { p.style.opacity = 0; setTimeout(() => p.remove(), 650); }, 900); return; }
     if (a.kind === 'text') { if (!cutOff && far < 2 * TAP_PX) { const [x, y] = fxy(a, {clientX: cx, clientY: cy}); openText(c, x, y, -1); } return; }
     if (a.kind === 'tmove') {
@@ -1586,7 +1597,11 @@ body.ink-top{border-top:var(--ink-h,0px) solid transparent}
     if (navigator.storage && navigator.storage.persist && c.q.s.length === 1) navigator.storage.persist().catch(() => {});
   }
   document.addEventListener('pointerdown', e => {
-    if (e.pointerType !== 'pen' || !host) return;                      // 필기는 펜슬만 — 손가락·마우스는 화면 넘기기·단어 선택 그대로
+    if (e.pointerType !== 'pen' || !host) return;
+    if (act && act.synth && Math.hypot(e.clientX - act.cx, e.clientY - act.cy) < 40) { act.id = e.pointerId; act.synth = false; act.viaTouch = false; act.tid = act.tid; e.preventDefault(); e.stopPropagation(); return; }   // 펜의 touch로 먼저 시작한 획 → 이제부터 pointer로 잇는다
+    penDown(e, null);
+  }, true);
+  function penDown(e, tt) {   // tt = 펜의 touch(사파리가 pointerdown을 주지 않았을 때 — 손바닥이 먼저 닿아 화면이 움직이던 중 등)                      // 필기는 펜슬만 — 손가락·마우스는 화면 넘기기·단어 선택 그대로
     if (!penSeen) { penSeen = true; try { localStorage.setItem('bnPen', '1'); } catch (x1) {} bar(barWant); host.onPen && host.onPen(); }
     if (pin) pinchEnd();
     if (act) endStroke(act.rx, act.ry, true);                          // 펜은 하나다: 새 획이 시작됐으면 앞 획은 끝난 것
@@ -1617,16 +1632,18 @@ body.ink-top{border-top:var(--ink-h,0px) solid transparent}
         else { clearSel(); a.poly = [[x, y]]; a.path = ns('path', {class: 'lasso', d: `M${x} ${y}`}); c.svg.appendChild(a.path); }
       } else if (tool === 'text') { const i = textAt(c, x, y); if (i >= 0) { a.kind = 'tmove'; a.idx = i; a.x0 = x; a.y0 = y; a.mx = a.my = 0; } }   // 글 도구: 글상자를 끌면 옮기고, 누르면 편집
     }
+    if (tt) { a.viaTouch = true; a.tid = tt.identifier; a.synth = true; dg.v++; }
     act = a; eat = true; if (a.kind === 'draw') kick(); const sl = getSelection(); if (sl && !sl.isCollapsed) sl.removeAllRanges();
-    try { (c ? c.el : document.body).setPointerCapture(e.pointerId); } catch (x2) {}
+    if (!tt) try { (c ? c.el : document.body).setPointerCapture(e.pointerId); } catch (x2) {}
     e.preventDefault(); e.stopPropagation();
-  }, true);
+  }
   document.addEventListener('pointermove', e => { if (!act || act.viaTouch || e.pointerId !== act.id) return; const ev = e.getCoalescedEvents ? e.getCoalescedEvents() : []; if (ev.length) for (let i = 0; i < ev.length; i++) addPoint(ev[i]); else addPoint(e); e.stopPropagation(); }, true);
   document.addEventListener('pointerup', e => { if (!act || e.pointerId !== act.id) return; e.stopPropagation(); dg.u++; endStroke(e.clientX, e.clientY, false); }, true);
   document.addEventListener('pointercancel', e => {
     if (!act || e.pointerId !== act.id) return; e.stopPropagation(); dg.c++;
     if (act.viaTouch) return;
-    if (act.tid !== null) { act.viaTouch = true; dg.t++; } else endStroke(act.rx, act.ry, true);
+    act.viaTouch = true; dg.t++;
+    if (act.tid === null) { const a = act; setTimeout(() => { if (act === a && a.tid === null) endStroke(a.rx, a.ry, true); }, 250); }   // 펜의 touch가 곧 오면 그것으로 잇는다
   }, true);
   const onView = () => {   // 긋는 중에 화면이 밀리거나 배율이 바뀌면 위치를 다시 재고 젖은 잉크를 통째로 다시 그린다
     const a = act; if (!a) return;
@@ -1656,7 +1673,17 @@ body.ink-top{border-top:var(--ink-h,0px) solid transparent}
   document.addEventListener('touchstart', e => {
     const now = performance.now();
     if (act && act.tid === null) { let best = null, bd = 40; for (const t of e.changedTouches) { const d = t.touchType === 'stylus' ? 0 : Math.hypot(t.clientX - act.cx, t.clientY - act.cy); if (d < bd) { bd = d; best = t; } } if (best) act.tid = best.identifier; }   // 방금 닿은 펜의 touch를 기억
-    for (const t of e.changedTouches) { if (t.touchType === 'stylus' || (act && t.identifier === act.tid)) continue; fingers.set(t.identifier, {x: t.clientX, y: t.clientY, t: now, palm: !!act || now < palmUntil, moved: false, el: e.target}); }
+    if (!act && host && !pin) for (const t of e.changedTouches) if (t.touchType === 'stylus' && t.target && t.target.closest && !t.target.closest('#inkBar')) {   // pointerdown 없이 펜 touch만 왔다 → 그것으로 획을 시작
+      penDown({target: t.target, clientX: t.clientX, clientY: t.clientY, pointerId: -1, button: 0, buttons: 1, preventDefault() {}, stopPropagation() {}}, t);
+      if (act) { if (e.cancelable) e.preventDefault(); e.stopPropagation(); } break;
+    }
+    let big = false;
+    for (const t of e.changedTouches) {
+      if (t.touchType === 'stylus' || (act && t.identifier === act.tid)) continue;
+      const rr = Math.max(t.radiusX || 0, t.radiusY || 0); if (rr > dg.r) dg.r = rr; const b = rr >= PALM_R; if (b) { big = true; dg.b++; }   // 넓게 닿은 손 = 손바닥(손가락 끝은 이보다 작다)
+      fingers.set(t.identifier, {x: t.clientX, y: t.clientY, t: now, palm: !!act || now < palmUntil || b, moved: false, el: e.target});
+    }
+    if (big && barOn() && e.cancelable) { e.preventDefault(); e.stopPropagation(); return; }   // 손바닥은 처음부터 화면을 못 밀게 — 화면이 밀리기 시작하면 사파리가 펜 입력을 끊는다
     for (const id of [...fingers.keys()]) if (!touchOf(e.touches, id)) fingers.delete(id);   // 끝을 놓친 손가락 정리
     if (act) { e.preventDefault(); e.stopPropagation(); return; }
     if (pin) { if (e.cancelable) e.preventDefault(); e.stopPropagation(); return; }
@@ -1667,7 +1694,7 @@ body.ink-top{border-top:var(--ink-h,0px) solid transparent}
     if (Z > 1.001 && unitOf(e.target)) { zeat = true; e.stopPropagation(); }   // 확대해 둔 동안에는 앱의 쓸어 넘기기(쪽 넘김)가 끼어들지 않게 — 화면 밀기는 브라우저가 그대로 한다
   }, {passive: false, capture: true});
   document.addEventListener('touchmove', e => {
-    if (act) { if (act.viaTouch) { const t = touchOf(e.changedTouches, act.tid); if (t) addPoint(t); } e.preventDefault(); e.stopPropagation(); return; }
+    if (act) { if (act.viaTouch) { let t = act.tid !== null ? touchOf(e.changedTouches, act.tid) : null; if (!t && act.tid === null) for (const u of e.changedTouches) if (u.touchType === 'stylus') { act.tid = u.identifier; t = u; break; } if (t) addPoint(t); } if (e.cancelable) e.preventDefault(); e.stopPropagation(); return; }
     if (pin) { const a = touchOf(e.touches, pin.i1), b = touchOf(e.touches, pin.i2); if (a && b) pinchMove(a, b); if (e.cancelable) e.preventDefault(); e.stopPropagation(); return; }
     let palm = false; const lim = 10 / zNat();
     for (const t of e.changedTouches) { const f = fingers.get(t.identifier); if (!f) continue; if (!f.moved && Math.hypot(t.clientX - f.x, t.clientY - f.y) > lim) f.moved = true; if (f.palm) palm = true; }
@@ -1722,6 +1749,7 @@ body.ink-top{border-top:var(--ink-h,0px) solid transparent}
     paintBar(); if (sel) drawSel(); if (dbg) status(stText);
   }
   function zoomSync() {   // 묶음 목록을 다시 받아 지금 배율을 입힌다 — 카드가 새로 그려졌을 때(host가 bar()를 부를 때) 돈다
+    if (pin) return;   // 확대 손짓 중에는 손대지 않는다(끝날 때 확정)
     let want = []; if (ZOOM_OWN && host && host.units && barOn()) { try { want = host.units() || []; } catch (e) { want = []; } }
     const ws = new Set(); for (const el of want) if (el && el.isConnected && (ZU.has(el) || alone(el))) ws.add(el);
     for (const el of [...ZU]) if (!ws.has(el)) unitOff(el);
@@ -1753,9 +1781,10 @@ body.ink-top{border-top:var(--ink-h,0px) solid transparent}
   }
   function pinchStart(a, b) {
     const cx = (a.clientX + b.clientX) / 2, cy = (a.clientY + b.clientY) / 2;
-    pin = {i1: a.identifier, i2: b.identifier, d0: Math.max(24, Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)), Z0: Z, z: Z, cx, cy, f: focal(cx, cy), raf: 0, H: new Map()};
-    ZU.forEach(el => { pin.H.set(el, el.offsetHeight); meta(el); });   // 높이는 여기서 한 번만 잰다(손짓 중에는 쓰기만)
-    if (pin.f) pin.f.el.style.willChange = 'transform';
+    pin = {i1: a.identifier, i2: b.identifier, d0: Math.max(24, Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)), Z0: Z, z: Z, cx, cy, x0: cx, y0: cy, f: focal(cx, cy), raf: 0, U: []};
+    const vh = DE.clientHeight;
+    ZU.forEach(el => { const r = el.getBoundingClientRect(), c = byEl.get(el), u = {el, x: r.left, y: r.top, fs: (c && c.fs) || 1, tx: 0, ty: 0, m: meta(el)}; pin.U.push(u); if (r.bottom > -vh && r.top < 2 * vh) el.style.willChange = 'transform'; });   // 손짓 시작 때 자리를 한 번 잰다
+    pin.ref = (pin.f && pin.U.find(u => u.el === pin.f.el)) || pin.U[0] || null;
     fingers.forEach(f => { f.moved = true; }); lastTap = null; zeat = true;   // 손가락을 다 뗄 때까지 앱의 touch 처리(쪽 넘김 등)에 이 손짓을 넘기지 않는다 — 첫 손가락을 뗄 때 「쓸어 넘김」으로 읽히지 않게
   }
   function pinchMove(a, b) {
@@ -1763,21 +1792,25 @@ body.ink-top{border-top:var(--ink-h,0px) solid transparent}
     pin.z = Math.max(1, Math.min(ZMAX, pin.Z0 * Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) / pin.d0));
     if (!pin.raf) pin.raf = requestAnimationFrame(pinchFrame);
   }
-  function pinchFrame() {   // 프레임당 한 번: 배율을 입히고, 손가락 사이에 있던 내용이 손가락을 따라오게 화면을 민다(두 손가락으로 끌면 화면이 따라 움직인다)
-    const p = pin; if (!p) return; p.raf = 0;
-    if (p.z !== Z) { Z = p.z; ZU.forEach(el => zoomEl(el, p.H.get(el))); toast(Math.round(Z * 100) + '%'); }
-    refocus(p.f, p.cx, p.cy);
+  function pinchFrame() {   // 프레임당 한 번: transform 하나로만 그린다 — 손가락 사이에 있던 내용이 손가락을 따라오게(화면 스크롤·아래 여백은 손을 뗄 때 한 번에 바꾼다 → 흔들리지 않는다)
+    const p = pin; if (!p || !p.ref) return; p.raf = 0;
+    const s = p.z / p.Z0, r = p.ref.el.getBoundingClientRect(), sx = r.left - p.ref.tx - p.ref.x, sy = r.top - p.ref.ty - p.ref.y;   // sx·sy = 그동안 브라우저가 화면을 민 만큼
+    for (const u of p.U) {
+      u.tx = p.cx + (u.x - p.x0) * s - (u.x + sx); u.ty = p.cy + (u.y - p.y0) * s - (u.y + sy);
+      u.el.style.transformOrigin = '0 0'; u.el.style.transform = `translate(${u.tx.toFixed(2)}px,${u.ty.toFixed(2)}px) scale(${+(u.fs * p.z).toFixed(4)})`; u.m.on = true;
+    }
+    const t = Math.round(p.z * 100) + '%', e = $('#inkToast'); if (!e || e.textContent !== t || !e.classList.contains('on')) toast(t);
   }
   function pinchEnd() {
     const p = pin; if (!p) return; pin = null; if (p.raf) cancelAnimationFrame(p.raf);
-    Z = p.z < 1.06 ? 1 : p.z; if (p.f) p.f.el.style.willChange = '';
+    Z = p.z < 1.06 ? 1 : p.z; p.U.forEach(u => { u.el.style.willChange = ''; });
     ZU.forEach(el => zoomEl(el)); refocus(p.f, p.cx, p.cy); afterZoom();
   }
 
   /* ── 도구 막대: 굿노트처럼 화면 맨 위에 고정. ✎를 누르면 접힌다 ── */
   function status(t) {
     stText = t || ''; const e = $('#inkSt');
-    const v = (stText || HINT) + (dbg ? ` · 펜 ${dg.d}/${dg.u} 취소 ${dg.c} 이어받음 ${dg.t} 보정 ${dg.s} 손 ${dg.p} · 배율 ${Z.toFixed(2)}×${zNat().toFixed(2)} · 소수좌표 ${dg.n ? Math.round(100 * dg.f / dg.n) : 0}%` : '');
+    const v = (stText || HINT) + (dbg ? ` · 펜 ${dg.d}/${dg.u} 취소 ${dg.c} 이어받음 ${dg.t} 보정 ${dg.s} 손 ${dg.p} 큰손 ${dg.b}(최대 ${Math.round(dg.r)}) 터치펜 ${dg.v} 두번톡 ${dg.w} · 배율 ${Z.toFixed(2)}×${zNat().toFixed(2)} · 소수좌표 ${dg.n ? Math.round(100 * dg.f / dg.n) : 0}%` : '');
     if (e && e.textContent !== v) e.textContent = v;
   }
   const TOPSEL = '.top,.clockbar,.panel,#zoom .x';
